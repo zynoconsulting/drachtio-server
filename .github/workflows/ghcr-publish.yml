@@ -43,6 +43,7 @@ jobs:
           context: .
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
-            DETECTED_TAG=${{ github.sha }}
+            SOURCE_REPO=https://github.com/${{ github.repository }}.git
+            DETECTED_TAG=${{ github.ref_name }}
           push: true
           no-cache: true
