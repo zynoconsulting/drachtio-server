@@ -2,17 +2,16 @@ FROM debian:bookworm-slim
 
 ARG BUILD_CPUS=4
 ARG DETECTED_TAG=main
+ARG SOURCE_REPO=https://github.com/drachtio/drachtio-server.git
 
 RUN apt-get update \
   && apt-get -y --quiet --force-yes upgrade \
   && apt-get install -y --no-install-recommends ca-certificates gcc g++ make build-essential \
   cmake git autoconf automake  curl libtool libtool-bin libssl-dev libcurl4-openssl-dev zlib1g-dev \
   libgoogle-perftools-dev jq libboost-all-dev \
-  && git clone --depth=50 https://github.com/drachtio/drachtio-server.git /usr/local/src/drachtio-server \
+  && echo "cloning ${SOURCE_REPO} at ${DETECTED_TAG}" \
+  && git clone --depth=50 --branch "${DETECTED_TAG}" "${SOURCE_REPO}" /usr/local/src/drachtio-server \
   && cd /usr/local/src/drachtio-server \
-  && git fetch --tags \
-  && echo "checking out ${DETECTED_TAG}" \
-  && git checkout ${DETECTED_TAG} \
   && git submodule update --init --recursive \
   && ./bootstrap.sh \
   && mkdir build \
