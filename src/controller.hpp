@@ -133,8 +133,13 @@ namespace drachtio {
     /* network --> client messages */
     int processRequestInsideDialog( nta_leg_t* leg, nta_incoming_t* irq, sip_t const *sip) ;
 
-    /* stateless callback for messages not associated with a leg */
-    int processMessageStatelessly( msg_t* msg, sip_t* sip ) ;
+    /* stateless callback for messages not associated with a leg.
+       If irq is provided, status>0 rejections are sent stateful (via
+       nta_incoming_treply on irq) instead of stateless (nta_msg_mreply),
+       which avoids over-decrementing the request msg's refcount when the
+       caller still owns the irq. See sip-dialog-controller.cpp's IIP
+       fallback for the only current irq-providing caller. */
+    int processMessageStatelessly( msg_t* msg, sip_t* sip, nta_incoming_t* irq = nullptr ) ;
 
     bool setupLegForIncomingRequest( const string& transactionId, const string& tag ) ;
 
@@ -169,6 +174,28 @@ namespace drachtio {
     void flushTportForSubscription( const char* user, const char* host ) ; 
     std::shared_ptr<UaInvalidData> findTportForSubscription( const char* user, const char* host ) ;
 
+    /**
+     * Contact alias table: (protocol, peer source address, advertised Contact host:port) ->
+     * the remote host:port of the connection that peer last sent a message on, recorded on
+     * every inbound message.
+     *
+     * sofia matches connections on the full host:port, so an inbound-only peer's advertised
+     * Contact never matches the connection it opened from an ephemeral port; drachtio pins the
+     * tport at dialog creation and never revisits it, so a silently abandoned connection (no
+     * FIN/RST -- tport_is_closed() stays false) swallows in-dialog requests until Timer F.
+     * This lets the send side follow the peer to its current connection instead.
+     *
+     * The table stores names, never tport pointers or references: the connection is re-fetched
+     * from sofia by name (tport_by_name) at send time, so sofia remains the sole owner of
+     * every connection's lifetime -- nothing here can leak or dangle, and nothing needs
+     * sweeping.
+     */
+    void cacheContactAlias( tport_t* tp, sip_t const* sip ) ;
+    /* pinned scopes the lookup to the interface the dialog's own connection was accepted on.
+       Returns NULL on any miss, leaving the caller on its existing pin (legacy behaviour). */
+    tport_t* getTportForContactAlias( tport_t* pinned, const char* proto, const char* srcAddress,
+        const char* advertisedHost, const char* advertisedPort ) ;
+
     RequestRouter& getRequestRouter(void) { return m_requestRouter; }
     StatsCollector& getStatsCollector(void) { return m_statsCollector; }
     std::unordered_set<std::string>& getPreservedHeaderNames(void) { return m_preservedHeaderNames; }
@@ -181,6 +208,8 @@ namespace drachtio {
     bool isNatDetectionDisabled(void) { return m_bDisableNatDetection; }
 
     unsigned int getTcpKeepaliveInterval() { return m_tcpKeepaliveSecs; }
+    unsigned int getTportQueuesize() { return m_tportQueuesize; }
+    unsigned int getTportMaxConsecutiveTimeouts() { return m_tportMaxConsecutiveTimeouts; }
 
 	private:
 
@@ -284,6 +313,19 @@ namespace drachtio {
 
     bool m_bMemoryDebug;
     unsigned int m_tcpKeepaliveSecs;
+    unsigned int m_tportQueuesize;
+    // opt-in dead-connection detection: max consecutive request timeouts on a
+    // connection-oriented tport before it is force-closed. 0 = disabled (legacy).
+    unsigned int m_tportMaxConsecutiveTimeouts;
+
+    bool m_bContactAlias;
+    struct ContactAliasTarget {
+        std::string host;   // remote address of the peer's current connection, as sofia names it
+        std::string port;
+    };
+    // key "proto|srcAddress|advertisedHost:advertisedPort" (lowercased). Names only --
+    // resolved back to a live tport at send time. See cacheContactAlias().
+    std::unordered_map<std::string, ContactAliasTarget> m_mapContactAlias;
 
     bool m_bDumpMemory;
 
