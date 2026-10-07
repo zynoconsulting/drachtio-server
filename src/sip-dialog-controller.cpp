@@ -463,6 +463,8 @@ namespace drachtio {
                     addRIP( orq, p ) ;       
                 }
                 if( sip_method_invite == method ) {
+                    // reINVITE: its ACK takes this CSeq, not a later PRACK's; the orq is freed when the 200 OK arrives
+                    dlg->setSeq( sip->sip_cseq->cs_seq ) ;
                     addOutgoingInviteTransaction( leg, orq, sip, dlg ) ;
                 }
 
@@ -1988,7 +1990,8 @@ namespace drachtio {
                     DR_LOG(log_debug) << "SipDialogController::processResponseInsideDialog: no session expires header found";
                 }
             }
-            if (rip->shouldClearDialogOnResponse()) {
+            // as with the RIP below, a provisional response (e.g. 1xx to a BYE) must not clear the dialog
+            if (statusCode >= 200 && rip->shouldClearDialogOnResponse()) {
                 string dialogId = rip->getDialogId() ;
                 if (sip->sip_cseq->cs_method == sip_method_bye && (sip->sip_status->st_status == 407 || sip->sip_status->st_status == 401)) {
                     DR_LOG(log_debug) << "SipDialogController::processResponseInsideDialog: NOT clearing dialog after receiving 401/407 response to BYE"  ;
@@ -2002,7 +2005,10 @@ namespace drachtio {
                     assert(false) ;
                 }
             }
-            clearRIP( orq ) ;     
+            // keep the RIP until the final response, so a final after a 1xx (e.g. 180/183 to a reINVITE) still reaches the app
+            if (statusCode >= 200) {
+                clearRIP( orq ) ;
+            }
             msg_destroy(msg) ;   // releases reference
         }
         else {
