@@ -116,6 +116,8 @@ async function createPeer(t, transport, sipPort) {
   t.after(() => transport === 'udp' ? socket.close() : socket.destroy());
   const received = [];
   const responses = new Map();
+  let subscriptionContact;
+  const subscriptionTag = randomUUID();
   const send = packet => transport === 'udp' ? socket.send(packet, sipPort, '127.0.0.1') : socket.write(packet);
   const receive = packet => {
     const raw = packet.toString();
@@ -130,7 +132,10 @@ async function createPeer(t, transport, sipPort) {
       return;
     }
     received.push({uri: lines[0].split(' ')[1], headers});
-    send(['SIP/2.0 200 OK', ...['via', 'from', 'to', 'call-id', 'cseq'].map(name => `${name}: ${headers[name]}`),
+    const acceptsSubscription = raw.startsWith('SUBSCRIBE ') && subscriptionContact;
+    send(['SIP/2.0 200 OK', ...['via', 'from', 'to', 'call-id', 'cseq'].map(name =>
+      `${name}: ${headers[name]}${acceptsSubscription && name === 'to' && !headers.to.includes(';tag=') ? ';tag=' + subscriptionTag : ''}`),
+      ...(acceptsSubscription ? [`Contact: <${subscriptionContact}>`, 'Expires: 3600'] : []),
       'Content-Length: 0', '', ''].join('\r\n'));
   };
   if (transport === 'udp') {
@@ -159,6 +164,7 @@ async function createPeer(t, transport, sipPort) {
   const port = transport === 'udp' ? socket.address().port : socket.localPort;
   return {
     port, received, close: () => transport === 'udp' ? socket.close() : socket.destroy(),
+    setSubscriptionContact: contact => { subscriptionContact = contact; },
     request(method, contact, scheme, options = {}) {
       const callId = options.callId || randomUUID();
       const response = new Promise((resolve, reject) => {
@@ -180,6 +186,32 @@ async function createPeer(t, transport, sipPort) {
       return response;
     }
   };
+}
+
+for (const transport of ['tcp', 'tls']) {
+  it(`${transport}: outbound subscription retains REGISTER peer handoff`, {timeout: 10000}, async t => {
+    const {srf, sipPort, scheme} = await startServer(t, transport, {});
+    const original = await createPeer(t, transport, sipPort);
+    const current = await createPeer(t, transport, sipPort);
+    const remoteContact = `sip:watcher@10.0.0.25:${original.port};transport=${transport}`;
+    original.setSubscriptionContact(remoteContact);
+    current.setSubscriptionContact(remoteContact);
+    await delay(50);
+    assert.equal(await original.request('REGISTER', remoteContact, scheme), 200);
+
+    // Reuse the peer's established connection to create a locally initiated dialog.
+    const initialTarget = `${scheme}:watcher@127.0.0.1:${original.port};transport=${transport}`;
+    const dialog = await srf.createUAC(initialTarget, {method: 'SUBSCRIBE', headers: {Event: 'dialog', Expires: '3600'}});
+    assert.equal(original.received.length, 1);
+    original.received.length = 0;
+    assert.equal(await current.request('REGISTER', remoteContact, scheme), 200);
+
+    const response = await dialog.request({method: 'SUBSCRIBE', headers: {Event: 'dialog', Expires: '3600'}});
+    assert.equal(response.status, 200);
+    assert.equal(current.received.length, 1, 'outbound renewal retains the existing REGISTER cache handoff');
+    assert.equal(original.received.length, 0, 'old connection receives no outbound renewal');
+    assert.equal(current.received[0].uri, remoteContact, 'handoff preserves the subscription remote target');
+  });
 }
 
 async function notify(srf, uri, stackDialogId, terminated) {
@@ -218,7 +250,7 @@ const fixtures = [
   {name: 'established route set survives renewal', recordRoute: true},
   {name: 'UDP NAT hint survives renewal without Record-Route', udpOnly: true, recordRoute: true, aggressive: true},
   {name: 'original connection closes after renewal', closeOriginal: true},
-  {name: 'accepted cancellation uses the renewing connection', expires: 0}
+  {name: 'accepted cancellation refreshes peer and target despite stale application URI', expires: 0}
 ];
 for (const transport of ['udp', 'tcp', 'tls']) {
   for (const fixture of fixtures) {
@@ -270,7 +302,9 @@ for (const transport of ['udp', 'tcp', 'tls']) {
       assert.equal(refreshedDialogId, dialog.id, 'renewal belongs to the existing dialog');
       if (fixture.registerElsewhere) assert.equal(await original.request('REGISTER', newContact, scheme), 200);
       if (fixture.closeOriginal && transport !== 'udp') original.close();
-      await notify(srf, fixture.defaultUri ? undefined : newContact, dialog.id, fixture.expires === 0);
+      // Nexus passes the stored Contact to its terminal NOTIFY before removing the subscription.
+      const notifyUri = fixture.defaultUri ? undefined : fixture.expires === 0 ? oldContact : newContact;
+      await notify(srf, notifyUri, dialog.id, fixture.expires === 0);
       const destination = fixture.rejection || (transport === 'udp' && fixture.recordRoute && !fixture.aggressive) ? original : current;
       const other = destination === original ? current : original;
       assert.equal(destination.received.length, 1, 'NOTIFY uses the accepted peer or established route set');

@@ -252,9 +252,9 @@ namespace drachtio {
             const sip_contact_t *remoteTarget = NULL ;
             if( nta_leg_get_route( leg, NULL, &remoteTarget ) < 0 ) remoteTarget = NULL ;
 
-            /* INVITE dialogs retain peer-cache handoff. Subscription dialogs retain the
+            /* INVITE and UAC dialogs retain peer-cache handoff. UAS subscription dialogs retain the
                transport and NAT next hop from their latest accepted SUBSCRIBE. */
-            const bool usePeerCache = dlg->isInviteDialog();
+            const bool usePeerCache = dlg->isInviteDialog() || dlg->getRole() != SipDialog::we_are_uas;
             std::shared_ptr<UaInvalidData> pRegBinding ;
             if( usePeerCache && remoteTarget && remoteTarget->m_url->url_host ) {
                 pRegBinding = m_pController->findTportForSubscription(
@@ -1245,7 +1245,7 @@ namespace drachtio {
                         // SUBSCRIBE is a target refresh. Commit its target and receiving peer
                         // only after the application successfully accepts this request.
                         // Keep the established route set and dialog identity; REGISTER is independent.
-                        if (bSentOK && code >= 200 && code < 300 && !dlg->isInviteDialog() &&
+                        if (bSentOK && code >= 200 && code < 300 && nta_incoming_status(irq) == code && !dlg->isInviteDialog() &&
                                 dlg->getRole() == SipDialog::we_are_uas &&
                                 sip->sip_request->rq_method == sip_method_subscribe && tp &&
                                 (!sip->sip_contact || nta_leg_server_route(leg, NULL, sip->sip_contact) == 0)) {
