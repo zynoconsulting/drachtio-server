@@ -252,10 +252,11 @@ namespace drachtio {
             const sip_contact_t *remoteTarget = NULL ;
             if( nta_leg_get_route( leg, NULL, &remoteTarget ) < 0 ) remoteTarget = NULL ;
 
-            /* a registered peer is tracked per-AOR and that binding wins: unlike the alias
-               table it survives the peer changing source address (mid-call handoff) */
+            /* INVITE and UAC dialogs retain peer-cache handoff. UAS subscription dialogs retain the
+               transport and NAT next hop from their latest accepted SUBSCRIBE. */
+            const bool usePeerCache = dlg->isInviteDialog() || dlg->getRole() != SipDialog::we_are_uas;
             std::shared_ptr<UaInvalidData> pRegBinding ;
-            if( remoteTarget && remoteTarget->m_url->url_host ) {
+            if( usePeerCache && remoteTarget && remoteTarget->m_url->url_host ) {
                 pRegBinding = m_pController->findTportForSubscription(
                     remoteTarget->m_url->url_user, remoteTarget->m_url->url_host, remoteTarget->m_url->url_port ) ;
             }
@@ -264,7 +265,7 @@ namespace drachtio {
                abandoned that connection (no FIN/RST) swallows this request until Timer F.
                Follow it to its current connection if the alias table knows one; a miss leaves
                the pin alone. See DrachtioController::cacheContactAlias. */
-            if (!pRegBinding) {
+            if (usePeerCache && !pRegBinding) {
                 tport_t* current = currentTportForDialog(dlg, remoteTarget, name.c_str()) ;
                 if (current != tp) {
                     tp = current ;
@@ -1149,7 +1150,8 @@ namespace drachtio {
 
                     pSelectedTransport->getDescription(transportDesc);
 
-                    tport_unref( tp ) ;
+                    // Hold the receiving connection through the final response and dialog refresh.
+                    // Sofia releases the irq's transport on completion; re-querying it afterward can fail.
             
                     //create tags for headers
                     tags = makeTags( headers, transportDesc,
@@ -1231,12 +1233,57 @@ namespace drachtio {
             }
 
             if (existingDialog) {
-                nta_leg_t* leg = nta_leg_by_call_id(m_pController->getAgent(), sip->sip_call_id->i_id);
+                nta_leg_t* leg = sip->sip_request->rq_method == sip_method_subscribe
+                    ? nta_leg_by_dialog(m_pController->getAgent(), NULL, sip->sip_call_id,
+                        sip->sip_from->a_tag, NULL, sip->sip_to->a_tag, NULL)
+                    : nta_leg_by_call_id(m_pController->getAgent(), sip->sip_call_id->i_id);
                 if (leg) {
                     std::shared_ptr<SipDialog> dlg ;
                     if(findDialogByLeg( leg, dlg )) {
                         dialogId = dlg->getDialogId();
                         dlg->removeIncomingRequestTransaction(transactionId);
+                        // SUBSCRIBE is a target refresh. Commit its target and receiving peer
+                        // only after the application successfully accepts this request.
+                        // Keep the established route set and dialog identity; REGISTER is independent.
+                        if (bSentOK && code >= 200 && code < 300 && nta_incoming_status(irq) == code && !dlg->isInviteDialog() &&
+                                dlg->getRole() == SipDialog::we_are_uas &&
+                                sip->sip_request->rq_method == sip_method_subscribe && tp &&
+                                (!sip->sip_contact || nta_leg_server_route(leg, NULL, sip->sip_contact) == 0)) {
+                            dlg->setTport(tp);
+                            dlg->setSourceAddress(nta_incoming_remote_host(irq));
+                            dlg->setSourcePort(::atoi(nta_incoming_remote_port(irq)));
+
+                            // UDP shares a listening tport, so its destination is separate from
+                            // the transport pin. Re-evaluate the UAS NAT policy using the established
+                            // route set and refreshed target, rather than renewal Record-Route headers.
+                            bool nat = false;
+                            if (tport_is_dgram(tp)) {
+                                const sip_route_t* routeSet = NULL;
+                                const sip_contact_t* target = NULL;
+                                nta_leg_get_route(leg, &routeSet, &target);
+                                if (m_pController->isAggressiveNatEnabled() && routeSet && routeSet->r_url->url_params &&
+                                        ::strstr(routeSet->r_url->url_params, "nat=yes")) {
+                                    nat = true;
+                                }
+                                else if (!m_pController->isNatDetectionDisabled() && !routeSet && target && target->m_url->url_host) {
+                                    const url_t* url = target->m_url;
+                                    nat = string(nta_incoming_remote_host(irq)) != url->url_host ||
+                                        (url->url_port && ::atoi(url->url_port) != ::atoi(nta_incoming_remote_port(irq)));
+                                }
+                            }
+                            if (nat) {
+                                string peer = nta_incoming_remote_host(irq);
+                                if (peer.find(':') != string::npos && peer.front() != '[') peer = "[" + peer + "]";
+                                const url_t* requestTarget = nta_incoming_url(irq);
+                                string route = string(requestTarget && requestTarget->url_scheme ? requestTarget->url_scheme : "sip") +
+                                    ":" + peer + ":" + nta_incoming_remote_port(irq);
+                                dlg->setRouteUri(route);
+                            }
+                            else {
+                                dlg->clearRouteUri();
+                            }
+
+                        }
                         DR_LOG(log_debug) << "SipDialogController::doRespondToSipRequest retrieved dialog id for existing dialog " << dialogId  ;
                         if (sip->sip_request->rq_method == sip_method_invite && body.length() && bSentOK) {
                             DR_LOG(log_debug) << "SipDialogController::doRespondToSipRequest updating local sdp for dialog " << dialogId  ;
@@ -1245,6 +1292,7 @@ namespace drachtio {
                     }
                 }
             }
+            if (tp) tport_unref(tp);
             msg_destroy( msg ); //release the reference
 
             DR_LOG(log_debug) << "SipDialogController::doRespondToSipRequest destroying irq " << irq  ;
