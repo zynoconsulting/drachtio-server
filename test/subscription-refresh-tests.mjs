@@ -231,32 +231,27 @@ async function notify(srf, uri, stackDialogId, terminated) {
 }
 
 const fixtures = [
-  {name: 'SIPS Contact over TLS', tlsOnly: true, sips: true},
-  {name: 'bare SIP Contact over TLS', tlsOnly: true, bareContact: true},
-  {name: 'same connection, unchanged Contact', sameConnection: true, sameContact: true},
-  {name: 'same connection, corrected public Contact', sameConnection: true, publicContact: true},
-  {name: 'replacement connection, unchanged Contact, explicit URI', sameContact: true},
-  {name: 'replacement connection, unchanged Contact, default URI', sameContact: true, defaultUri: true},
+  {name: 'SIPS Contact over TLS', transports: ['tls'], sips: true},
+  {name: 'bare SIP Contact over TLS', transports: ['tls'], bareContact: true},
+  {name: 'same connection, corrected public Contact', transports: ['tls'], sameConnection: true, publicContact: true},
+  {name: 'replacement connection, unchanged Contact, explicit URI', transports: ['udp', 'tls'], sameContact: true},
   {name: 'replacement connection, changed private Contact, explicit URI'},
-  {name: 'replacement connection, changed private Contact, default URI', defaultUri: true},
-  {name: 'replacement connection, corrected public Contact', publicContact: true},
-  {name: 'initial reachable Contact', publicInitially: true, publicContact: true},
-  {name: 'replacement connection, omitted Contact', omitContact: true},
-  {name: 'replacement connection, rejected renewal', rejection: 403},
-  {name: 'replacement connection, challenged renewal with aliases enabled', rejection: 401, sameContact: true, aliases: true},
-  {name: 'rejected renewal cannot follow a Contact alias after cache expiry', rejection: 403, sameContact: true, aliases: true, initialExpires: 1},
-  {name: 'REGISTER on another connection after renewal', registerElsewhere: true},
-  {name: 'REGISTER on another connection, default URI', registerElsewhere: true, defaultUri: true},
-  {name: 'established route set survives renewal', recordRoute: true},
-  {name: 'UDP NAT hint survives renewal without Record-Route', udpOnly: true, recordRoute: true, aggressive: true},
-  {name: 'original connection closes after renewal', closeOriginal: true},
-  {name: 'accepted cancellation refreshes peer and target despite stale application URI', expires: 0}
+  {name: 'replacement connection, changed private Contact, default URI', transports: ['tls'], defaultUri: true},
+  {name: 'replacement connection, corrected public Contact', transports: ['udp', 'tls'], publicContact: true},
+  {name: 'initial reachable Contact', transports: ['udp', 'tls'], publicInitially: true, publicContact: true},
+  {name: 'replacement connection, omitted Contact', transports: ['tls'], omitContact: true},
+  {name: 'replacement connection, rejected renewal', transports: ['udp', 'tls'], rejection: 403},
+  {name: 'replacement connection, challenged renewal with aliases enabled', transports: ['tls'], rejection: 401, sameContact: true, aliases: true},
+  {name: 'rejected renewal cannot follow a Contact alias after cache expiry', transports: ['tls'], rejection: 403, sameContact: true, aliases: true, initialExpires: 1},
+  {name: 'REGISTER on another connection, default URI', transports: ['tls'], registerElsewhere: true, defaultUri: true},
+  {name: 'established route set survives renewal', transports: ['udp', 'tls'], recordRoute: true},
+  {name: 'UDP NAT hint survives renewal without Record-Route', transports: ['udp'], recordRoute: true, aggressive: true},
+  {name: 'original connection closes after renewal', transports: ['tls'], closeOriginal: true},
+  {name: 'accepted cancellation refreshes peer and target despite stale application URI', transports: ['udp', 'tls'], expires: 0}
 ];
 for (const transport of ['udp', 'tcp', 'tls']) {
   for (const fixture of fixtures) {
-    if (fixture.tlsOnly && transport !== 'tls') continue;
-    if (fixture.udpOnly && transport !== 'udp') continue;
-    if (transport === 'udp' && (fixture.closeOriginal || fixture.aliases)) continue;
+    if (fixture.transports && !fixture.transports.includes(transport)) continue;
     it(`${transport}: ${fixture.name}`, {timeout: 10000}, async t => {
       const {srf, sipPort, scheme} = await startServer(t, transport, fixture);
       const original = await createPeer(t, transport, sipPort);
@@ -288,7 +283,7 @@ for (const transport of ['udp', 'tcp', 'tls']) {
       const subscribed = original.request('SUBSCRIBE', oldContact, scheme, {recordRoute: originalRoute});
       const dialog = await established;
       assert.equal(await subscribed, 202);
-      // Match Nexus: only Drachtio retains the subscription dialog after establishment.
+      // Keep the native dialog only, so the application cannot refresh routing in a local Dialog object.
       srf.removeDialog(dialog);
       await notify(srf, oldContact, dialog.id);
       assert.equal(original.received.length, 1, 'initial NOTIFY uses the established peer');
@@ -302,7 +297,7 @@ for (const transport of ['udp', 'tcp', 'tls']) {
       assert.equal(refreshedDialogId, dialog.id, 'renewal belongs to the existing dialog');
       if (fixture.registerElsewhere) assert.equal(await original.request('REGISTER', newContact, scheme), 200);
       if (fixture.closeOriginal && transport !== 'udp') original.close();
-      // Nexus passes the stored Contact to its terminal NOTIFY before removing the subscription.
+      // An application may still pass its previous target when sending a terminal NOTIFY.
       const notifyUri = fixture.defaultUri ? undefined : fixture.expires === 0 ? oldContact : newContact;
       await notify(srf, notifyUri, dialog.id, fixture.expires === 0);
       const destination = fixture.rejection || (transport === 'udp' && fixture.recordRoute && !fixture.aggressive) ? original : current;
