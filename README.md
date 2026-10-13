@@ -6,18 +6,21 @@ The nodejs module that you can use to create applications controlling the server
 
 > Note: versions 0.9.0 (including rc tags) of drachtio server must be used in conjuction with a drachtio-srf version of 5.0.0 or above due to changes in the wire protocol.
 
-## In-dialog next-hop routing
+## Subscription renewal on TCP/TLS
 
-An application can supply `proxy` on an in-dialog `drachtio-srf` request to select its next-hop
-socket while retaining the Request-URI and SIP dialog headers. This option can name the peer
-directly; it does not require an intermediate SIP proxy. It overrides the dialog's saved NAT
-route and connection pin for that request only. An explicit URI transport is honored; otherwise
-SIP retains the dialog's protocol and SIPS selects TLS. Requests without this option retain
-the existing dialog route and cached-transport behavior.
+After a successful 2xx response to an in-dialog SUBSCRIBE on TCP or TLS, Drachtio updates the
+subscription dialog's remote target from Contact when present and caches the connection that
+carried the accepted request. A renewal without Contact retains the remote target and still
+refreshes the connection. Subsequent in-dialog NOTIFY uses that connection without an explicit
+`proxy`, including when Contact contains a private address or remains unchanged after reconnecting.
+The Call-ID, dialog tags, and established SIP route set are preserved. Rejected or unsuccessfully
+sent responses leave the target and connection intact. REGISTER bindings and contact-alias
+observations cannot override the subscription connection; INVITE dialog handoff behavior is unchanged.
+UDP subscription routing retains its existing behavior.
 
-The regression suite starts isolated local servers and is included in the normal CI tests.
-Run it separately with `cd test && npm run test:in-dialog-proxy`; `DRACHTIO_BINARY` may select
-a different server build.
+The wire suite starts isolated local servers and is included in the normal CI tests. Run it
+separately with `cd test && npm run test:subscription-refresh`; `DRACHTIO_BINARY` may select
+a different server build. TLS fixtures generate temporary certificates and admin credentials.
 
 ## Docker
 A docker image [can be found here](https://hub.docker.com/r/drachtio/drachtio-server).

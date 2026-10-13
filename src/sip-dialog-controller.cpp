@@ -164,7 +164,7 @@ namespace drachtio {
 	}
 	SipDialogController::~SipDialogController() {
 	}
-    bool SipDialogController::sendRequestInsideDialog( const string& clientMsgId, const string& dialogId, const string& startLine, const string& headers, const string& body, string& transactionId, const string& routeUrl ) {
+    bool SipDialogController::sendRequestInsideDialog( const string& clientMsgId, const string& dialogId, const string& startLine, const string& headers, const string& body, string& transactionId ) {
 
         assert( dialogId.length() > 0 ) ;
 
@@ -179,7 +179,7 @@ namespace drachtio {
         void* place = su_msg_data( msg ) ;
 
         /* we need to use placement new to allocate the object in a specific address, hence we are responsible for deleting it (below) */
-        SipMessageData* msgData = new(place) SipMessageData( clientMsgId, transactionId, "", dialogId, startLine, headers, body, routeUrl ) ;
+        SipMessageData* msgData = new(place) SipMessageData( clientMsgId, transactionId, "", dialogId, startLine, headers, body ) ;
         rv = su_msg_send(msg);  
         if( rv < 0 ) {
             m_pController->getClientController()->route_api_response( clientMsgId, "NOK", "Internal server error sending message") ;
@@ -252,10 +252,11 @@ namespace drachtio {
             const sip_contact_t *remoteTarget = NULL ;
             if( nta_leg_get_route( leg, NULL, &remoteTarget ) < 0 ) remoteTarget = NULL ;
 
-            /* a registered peer is tracked per-AOR and that binding wins: unlike the alias
-               table it survives the peer changing source address (mid-call handoff) */
+            /* INVITE dialogs and UDP retain their existing peer-cache routing. Connection-oriented
+               subscription dialogs retain the connection from their latest accepted SUBSCRIBE. */
+            const bool usePeerCache = dlg->isInviteDialog() || dlg->getProtocol() == "udp";
             std::shared_ptr<UaInvalidData> pRegBinding ;
-            if( remoteTarget && remoteTarget->m_url->url_host ) {
+            if( usePeerCache && remoteTarget && remoteTarget->m_url->url_host ) {
                 pRegBinding = m_pController->findTportForSubscription(
                     remoteTarget->m_url->url_user, remoteTarget->m_url->url_host, remoteTarget->m_url->url_port ) ;
             }
@@ -264,7 +265,7 @@ namespace drachtio {
                abandoned that connection (no FIN/RST) swallows this request until Timer F.
                Follow it to its current connection if the alias table knows one; a miss leaves
                the pin alone. See DrachtioController::cacheContactAlias. */
-            if (!pRegBinding) {
+            if (usePeerCache && !pRegBinding) {
                 tport_t* current = currentTportForDialog(dlg, remoteTarget, name.c_str()) ;
                 if (current != tp) {
                     tp = current ;
@@ -347,38 +348,6 @@ namespace drachtio {
 
             if (dlg->getRouteUri(routeUri)) {
                 DR_LOG(log_debug) << "SipDialogController::doSendRequestInsideDialog - sending request to nat'ed address using route " << routeUri ;
-            }
-
-            // An application-supplied next hop wins over the dialog's original NAT route and
-            // transport pin. Keep the dialog and Request-URI while reaching its current peer.
-            std::shared_ptr<SipTransport> selectedTransport;
-            if (*pData->getRouteUrl() != '\0') {
-                routeUri = pData->getRouteUrl();
-                // Sofia otherwise defaults a bare SIP route to UDP, even with a TCP primary
-                // tport. Make the inherited protocol explicit on the next hop only.
-                string decodedRoute = routeUri;
-                url_t nextHop[1];
-                if (url_d(nextHop, decodedRoute.data()) < 0) {
-                    throw std::runtime_error("invalid in-dialog next hop");
-                }
-                if (!url_has_param(nextHop, "transport")) {
-                    const string protocol = nextHop->url_type == url_sips ? "tls" : dlg->getProtocol();
-                    const string params = string(nextHop->url_params ? nextHop->url_params : "") +
-                        (nextHop->url_params ? ";" : "") + "transport=" + protocol;
-                    nextHop->url_params = params.c_str();
-                    std::vector<char> encoded(routeUri.size() + protocol.size() + 12);
-                    const auto length = url_e(encoded.data(), encoded.size(), nextHop);
-                    if (length < 0 || static_cast<size_t>(length) >= encoded.size()) {
-                        throw std::runtime_error("invalid in-dialog next hop");
-                    }
-                    routeUri.assign(encoded.data(), length);
-                }
-                selectedTransport = SipTransport::findAppropriateTransport(routeUri.c_str());
-                if (!selectedTransport) {
-                    throw std::runtime_error("requested protocol/transport not available");
-                }
-                tp = (tport_t *) selectedTransport->getTport();
-                forceTport = true;
             }
 
             if( sip_method_ack == method ) {
@@ -1181,7 +1150,8 @@ namespace drachtio {
 
                     pSelectedTransport->getDescription(transportDesc);
 
-                    tport_unref( tp ) ;
+                    // Hold the receiving connection through the final response and dialog refresh.
+                    // Sofia releases the irq's transport on completion; re-querying it afterward can fail.
             
                     //create tags for headers
                     tags = makeTags( headers, transportDesc,
@@ -1263,12 +1233,26 @@ namespace drachtio {
             }
 
             if (existingDialog) {
-                nta_leg_t* leg = nta_leg_by_call_id(m_pController->getAgent(), sip->sip_call_id->i_id);
+                nta_leg_t* leg = sip->sip_request->rq_method == sip_method_subscribe
+                    ? nta_leg_by_dialog(m_pController->getAgent(), NULL, sip->sip_call_id,
+                        sip->sip_from->a_tag, NULL, sip->sip_to->a_tag, NULL)
+                    : nta_leg_by_call_id(m_pController->getAgent(), sip->sip_call_id->i_id);
                 if (leg) {
                     std::shared_ptr<SipDialog> dlg ;
                     if(findDialogByLeg( leg, dlg )) {
                         dialogId = dlg->getDialogId();
                         dlg->removeIncomingRequestTransaction(transactionId);
+                        // SUBSCRIBE is a target refresh. Commit its target and receiving TCP/TLS
+                        // connection only after the application successfully accepts this request.
+                        // Keep the established route set and dialog identity; REGISTER is independent.
+                        if (bSentOK && code >= 200 && code < 300 && !dlg->isInviteDialog() &&
+                                dlg->getRole() == SipDialog::we_are_uas &&
+                                sip->sip_request->rq_method == sip_method_subscribe && tp && !tport_is_dgram(tp) &&
+                                (!sip->sip_contact || nta_leg_server_route(leg, NULL, sip->sip_contact) == 0)) {
+                            dlg->setTport(tp);
+                            dlg->setSourceAddress(nta_incoming_remote_host(irq));
+                            dlg->setSourcePort(::atoi(nta_incoming_remote_port(irq)));
+                        }
                         DR_LOG(log_debug) << "SipDialogController::doRespondToSipRequest retrieved dialog id for existing dialog " << dialogId  ;
                         if (sip->sip_request->rq_method == sip_method_invite && body.length() && bSentOK) {
                             DR_LOG(log_debug) << "SipDialogController::doRespondToSipRequest updating local sdp for dialog " << dialogId  ;
@@ -1277,6 +1261,7 @@ namespace drachtio {
                     }
                 }
             }
+            if (tp) tport_unref(tp);
             msg_destroy( msg ); //release the reference
 
             DR_LOG(log_debug) << "SipDialogController::doRespondToSipRequest destroying irq " << irq  ;

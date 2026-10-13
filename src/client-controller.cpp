@@ -458,7 +458,7 @@ namespace drachtio {
         }
     } 
     bool ClientController::sendRequestInsideDialog( client_ptr client, const string& clientMsgId, const string& dialogId, const string& startLine, 
-        const string& headers, const string& body, string& transactionId, const string& routeUrl ) {
+        const string& headers, const string& body, string& transactionId ) {
 
         generateUuid( transactionId ) ;
         if( 0 != startLine.find("ACK") ) {
@@ -466,7 +466,7 @@ namespace drachtio {
         }
 
         addApiRequest( client, clientMsgId )  ;
-        bool rc = m_pController->getDialogController()->sendRequestInsideDialog( clientMsgId, dialogId, startLine, headers, body, transactionId, routeUrl) ;
+        bool rc = m_pController->getDialogController()->sendRequestInsideDialog( clientMsgId, dialogId, startLine, headers, body, transactionId) ;
         return rc ;
     }
     bool ClientController::sendRequestOutsideDialog( client_ptr client, const string& clientMsgId, const string& startLine, const string& headers, 

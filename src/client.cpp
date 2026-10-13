@@ -200,7 +200,7 @@ namespace drachtio {
             else if( dialogId.length() > 0 ) { 
                 //has dialog id - request within a dialog
                 DR_LOG(log_debug) << "Client::processMessage - sending a request inside a dialog (dialogId provided)"  ;
-                bOK = m_controller.sendRequestInsideDialog( shared_from_this(), tokens[0], dialogId, startLine, headers, body, transactionId, routeUrl ) ;
+                bOK = m_controller.sendRequestInsideDialog( shared_from_this(), tokens[0], dialogId, startLine, headers, body, transactionId ) ;
             }
             else if( transactionId.length() > 0 ) {
                 if( 0 == startLine.find("CANCEL") ) {
@@ -219,7 +219,7 @@ namespace drachtio {
                     std::shared_ptr<SipDialog> dlg ;
                     if( getDialogController()->findDialogByCallId( strCallId, dlg ) ) {
                         DR_LOG(log_debug) << "Client::processMessage - sending a request inside a dialog (call-id provided)"  ;
-                        m_controller.sendRequestInsideDialog( shared_from_this(), tokens[0], dlg->getDialogId(), startLine, headers, body, transactionId, routeUrl ) ;
+                        m_controller.sendRequestInsideDialog( shared_from_this(), tokens[0], dlg->getDialogId(), startLine, headers, body, transactionId ) ;
                         return true ;
                     }
                 }
