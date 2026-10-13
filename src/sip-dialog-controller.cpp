@@ -252,9 +252,9 @@ namespace drachtio {
             const sip_contact_t *remoteTarget = NULL ;
             if( nta_leg_get_route( leg, NULL, &remoteTarget ) < 0 ) remoteTarget = NULL ;
 
-            /* INVITE dialogs and UDP retain their existing peer-cache routing. Connection-oriented
-               subscription dialogs retain the connection from their latest accepted SUBSCRIBE. */
-            const bool usePeerCache = dlg->isInviteDialog() || dlg->getProtocol() == "udp";
+            /* INVITE dialogs retain peer-cache handoff. Subscription dialogs retain the
+               transport and NAT next hop from their latest accepted SUBSCRIBE. */
+            const bool usePeerCache = dlg->isInviteDialog();
             std::shared_ptr<UaInvalidData> pRegBinding ;
             if( usePeerCache && remoteTarget && remoteTarget->m_url->url_host ) {
                 pRegBinding = m_pController->findTportForSubscription(
@@ -1242,16 +1242,47 @@ namespace drachtio {
                     if(findDialogByLeg( leg, dlg )) {
                         dialogId = dlg->getDialogId();
                         dlg->removeIncomingRequestTransaction(transactionId);
-                        // SUBSCRIBE is a target refresh. Commit its target and receiving TCP/TLS
-                        // connection only after the application successfully accepts this request.
+                        // SUBSCRIBE is a target refresh. Commit its target and receiving peer
+                        // only after the application successfully accepts this request.
                         // Keep the established route set and dialog identity; REGISTER is independent.
                         if (bSentOK && code >= 200 && code < 300 && !dlg->isInviteDialog() &&
                                 dlg->getRole() == SipDialog::we_are_uas &&
-                                sip->sip_request->rq_method == sip_method_subscribe && tp && !tport_is_dgram(tp) &&
+                                sip->sip_request->rq_method == sip_method_subscribe && tp &&
                                 (!sip->sip_contact || nta_leg_server_route(leg, NULL, sip->sip_contact) == 0)) {
                             dlg->setTport(tp);
                             dlg->setSourceAddress(nta_incoming_remote_host(irq));
                             dlg->setSourcePort(::atoi(nta_incoming_remote_port(irq)));
+
+                            // UDP shares a listening tport, so its destination is separate from
+                            // the transport pin. Re-evaluate the UAS NAT policy using the established
+                            // route set and refreshed target, rather than renewal Record-Route headers.
+                            bool nat = false;
+                            if (tport_is_dgram(tp)) {
+                                const sip_route_t* routeSet = NULL;
+                                const sip_contact_t* target = NULL;
+                                nta_leg_get_route(leg, &routeSet, &target);
+                                if (m_pController->isAggressiveNatEnabled() && routeSet && routeSet->r_url->url_params &&
+                                        ::strstr(routeSet->r_url->url_params, "nat=yes")) {
+                                    nat = true;
+                                }
+                                else if (!m_pController->isNatDetectionDisabled() && !routeSet && target && target->m_url->url_host) {
+                                    const url_t* url = target->m_url;
+                                    nat = string(nta_incoming_remote_host(irq)) != url->url_host ||
+                                        (url->url_port && ::atoi(url->url_port) != ::atoi(nta_incoming_remote_port(irq)));
+                                }
+                            }
+                            if (nat) {
+                                string peer = nta_incoming_remote_host(irq);
+                                if (peer.find(':') != string::npos && peer.front() != '[') peer = "[" + peer + "]";
+                                const url_t* requestTarget = nta_incoming_url(irq);
+                                string route = string(requestTarget && requestTarget->url_scheme ? requestTarget->url_scheme : "sip") +
+                                    ":" + peer + ":" + nta_incoming_remote_port(irq);
+                                dlg->setRouteUri(route);
+                            }
+                            else {
+                                dlg->clearRouteUri();
+                            }
+
                         }
                         DR_LOG(log_debug) << "SipDialogController::doRespondToSipRequest retrieved dialog id for existing dialog " << dialogId  ;
                         if (sip->sip_request->rq_method == sip_method_invite && body.length() && bSentOK) {
