@@ -6,6 +6,19 @@ The nodejs module that you can use to create applications controlling the server
 
 > Note: versions 0.9.0 (including rc tags) of drachtio server must be used in conjuction with a drachtio-srf version of 5.0.0 or above due to changes in the wire protocol.
 
+## In-dialog next-hop routing
+
+An application can supply `proxy` on an in-dialog `drachtio-srf` request to select its next-hop
+socket while retaining the Request-URI and SIP dialog headers. This option can name the peer
+directly; it does not require an intermediate SIP proxy. It overrides the dialog's saved NAT
+route and connection pin for that request only. An explicit URI transport is honored; otherwise
+SIP retains the dialog's protocol and SIPS selects TLS. Requests without this option retain
+the existing dialog route and cached-transport behavior.
+
+The regression suite starts isolated local servers and is included in the normal CI tests.
+Run it separately with `cd test && npm run test:in-dialog-proxy`; `DRACHTIO_BINARY` may select
+a different server build.
+
 ## Docker
 A docker image [can be found here](https://hub.docker.com/r/drachtio/drachtio-server).
 

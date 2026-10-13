@@ -164,7 +164,7 @@ namespace drachtio {
 	}
 	SipDialogController::~SipDialogController() {
 	}
-    bool SipDialogController::sendRequestInsideDialog( const string& clientMsgId, const string& dialogId, const string& startLine, const string& headers, const string& body, string& transactionId ) {
+    bool SipDialogController::sendRequestInsideDialog( const string& clientMsgId, const string& dialogId, const string& startLine, const string& headers, const string& body, string& transactionId, const string& routeUrl ) {
 
         assert( dialogId.length() > 0 ) ;
 
@@ -179,7 +179,7 @@ namespace drachtio {
         void* place = su_msg_data( msg ) ;
 
         /* we need to use placement new to allocate the object in a specific address, hence we are responsible for deleting it (below) */
-        SipMessageData* msgData = new(place) SipMessageData( clientMsgId, transactionId, "", dialogId, startLine, headers, body ) ;
+        SipMessageData* msgData = new(place) SipMessageData( clientMsgId, transactionId, "", dialogId, startLine, headers, body, routeUrl ) ;
         rv = su_msg_send(msg);  
         if( rv < 0 ) {
             m_pController->getClientController()->route_api_response( clientMsgId, "NOK", "Internal server error sending message") ;
@@ -347,6 +347,38 @@ namespace drachtio {
 
             if (dlg->getRouteUri(routeUri)) {
                 DR_LOG(log_debug) << "SipDialogController::doSendRequestInsideDialog - sending request to nat'ed address using route " << routeUri ;
+            }
+
+            // An application-supplied next hop wins over the dialog's original NAT route and
+            // transport pin. Keep the dialog and Request-URI while reaching its current peer.
+            std::shared_ptr<SipTransport> selectedTransport;
+            if (*pData->getRouteUrl() != '\0') {
+                routeUri = pData->getRouteUrl();
+                // Sofia otherwise defaults a bare SIP route to UDP, even with a TCP primary
+                // tport. Make the inherited protocol explicit on the next hop only.
+                string decodedRoute = routeUri;
+                url_t nextHop[1];
+                if (url_d(nextHop, decodedRoute.data()) < 0) {
+                    throw std::runtime_error("invalid in-dialog next hop");
+                }
+                if (!url_has_param(nextHop, "transport")) {
+                    const string protocol = nextHop->url_type == url_sips ? "tls" : dlg->getProtocol();
+                    const string params = string(nextHop->url_params ? nextHop->url_params : "") +
+                        (nextHop->url_params ? ";" : "") + "transport=" + protocol;
+                    nextHop->url_params = params.c_str();
+                    std::vector<char> encoded(routeUri.size() + protocol.size() + 12);
+                    const auto length = url_e(encoded.data(), encoded.size(), nextHop);
+                    if (length < 0 || static_cast<size_t>(length) >= encoded.size()) {
+                        throw std::runtime_error("invalid in-dialog next hop");
+                    }
+                    routeUri.assign(encoded.data(), length);
+                }
+                selectedTransport = SipTransport::findAppropriateTransport(routeUri.c_str());
+                if (!selectedTransport) {
+                    throw std::runtime_error("requested protocol/transport not available");
+                }
+                tp = (tport_t *) selectedTransport->getTport();
+                forceTport = true;
             }
 
             if( sip_method_ack == method ) {

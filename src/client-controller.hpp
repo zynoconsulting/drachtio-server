@@ -93,7 +93,7 @@ namespace drachtio {
     void makeOutboundConnection( const string& transactionId, const string& host, const string& port, const string& transport ) ;
     void selectClientForTag(const string& transactionId, const string& tag);
 
-    bool sendRequestInsideDialog( client_ptr client, const string& clientMsgId, const string& dialogId, const string& startLine, const string& headers, const string& body, string& transactionId ) ;
+    bool sendRequestInsideDialog( client_ptr client, const string& clientMsgId, const string& dialogId, const string& startLine, const string& headers, const string& body, string& transactionId, const string& routeUrl ) ;
     bool sendRequestOutsideDialog( client_ptr client, const string& clientMsgId, const string& startLine, const string& headers, const string& body, string& transactionId, string& dialogId, string& routeUrl ) ;
     bool respondToSipRequest( client_ptr client, const string& msgId, const string& transactionId, const string& startLine, const string& headers, const string& body ) ;      
     bool sendCancelRequest( client_ptr client, const string& msgId, const string& transactionId, const string& startLine, const string& headers, const string& body ) ;
