@@ -15,6 +15,7 @@ import Srf from 'drachtio-srf';
 
 // Each case starts an isolated local server. Override DRACHTIO_BINARY to check another build.
 const binary = process.env.DRACHTIO_BINARY || fileURLToPath(new URL('../build/drachtio', import.meta.url));
+const callSdp = 'v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=contact-test\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 40000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n';
 
 async function freePort() {
   const server = createServer();
@@ -50,7 +51,7 @@ async function startServer(t, transport, fixture) {
   await writeFile(config, `<drachtio>
     <admin port="${adminPort}" secret="${secret}">127.0.0.1</admin>
     <sip>
-      <contacts>${plainContact}<contact>${scheme}:127.0.0.1:${sipPort};transport=${transport}</contact></contacts>
+      <contacts>${plainContact}<contact${fixture.externalIp ? ` external-ip="${fixture.externalIp}"` : ''}>${scheme}:127.0.0.1:${sipPort};transport=${transport}</contact></contacts>
       <tls><key-file>${keyFile}</key-file><cert-file>${certFile}</cert-file><chain-file>${certFile}</chain-file><min-tls-version>1.2</min-tls-version></tls>
     </sip>
     <cdrs>false</cdrs>
@@ -117,6 +118,7 @@ async function createPeer(t, transport, sipPort) {
   const received = [];
   const responses = new Map();
   let subscriptionContact;
+  let inviteContact;
   const subscriptionTag = randomUUID();
   const send = packet => transport === 'udp' ? socket.send(packet, sipPort, '127.0.0.1') : socket.write(packet);
   const receive = packet => {
@@ -131,12 +133,16 @@ async function createPeer(t, transport, sipPort) {
       if (status >= 200) responses.get(headers['call-id'])?.(status);
       return;
     }
-    received.push({uri: lines[0].split(' ')[1], headers});
+    const method = lines[0].split(' ')[0];
+    received.push({method, uri: lines[0].split(' ')[1], headers});
+    if (method === 'ACK') return;
     const acceptsSubscription = raw.startsWith('SUBSCRIBE ') && subscriptionContact;
+    const acceptsInvite = method === 'INVITE' && inviteContact;
     send(['SIP/2.0 200 OK', ...['via', 'from', 'to', 'call-id', 'cseq'].map(name =>
-      `${name}: ${headers[name]}${acceptsSubscription && name === 'to' && !headers.to.includes(';tag=') ? ';tag=' + subscriptionTag : ''}`),
+      `${name}: ${headers[name]}${(acceptsSubscription || acceptsInvite) && name === 'to' && !headers.to.includes(';tag=') ? ';tag=' + subscriptionTag : ''}`),
       ...(acceptsSubscription ? [`Contact: <${subscriptionContact}>`, 'Expires: 3600'] : []),
-      'Content-Length: 0', '', ''].join('\r\n'));
+      ...(acceptsInvite ? [`Contact: <${inviteContact}>`, 'Content-Type: application/sdp'] : []),
+      `Content-Length: ${acceptsInvite ? Buffer.byteLength(callSdp) : 0}`, '', acceptsInvite ? callSdp : ''].join('\r\n'));
   };
   if (transport === 'udp') {
     socket.on('message', receive);
@@ -165,6 +171,14 @@ async function createPeer(t, transport, sipPort) {
   return {
     port, received, close: () => transport === 'udp' ? socket.close() : socket.destroy(),
     setSubscriptionContact: contact => { subscriptionContact = contact; },
+    setInviteContact: contact => { inviteContact = contact; },
+    hangup(invite) {
+      send([`BYE ${invite.headers.contact.slice(1, -1)} SIP/2.0`,
+        `Via: SIP/2.0/${transport.toUpperCase()} 127.0.0.1:${port};branch=z9hG4bK-${randomUUID()};rport`,
+        `From: ${invite.headers.to};tag=${subscriptionTag}`, `To: ${invite.headers.from}`,
+        `Call-ID: ${invite.headers['call-id']}`, 'CSeq: 2 BYE', 'Max-Forwards: 70',
+        'Content-Length: 0', '', ''].join('\r\n'));
+    },
     request(method, contact, scheme, options = {}) {
       const callId = options.callId || randomUUID();
       const response = new Promise((resolve, reject) => {
@@ -186,6 +200,34 @@ async function createPeer(t, transport, sipPort) {
       return response;
     }
   };
+}
+
+for (const fixture of [
+  {transport: 'tcp', externalIp: '198.51.100.25'},
+  {transport: 'tls', externalIp: '198.51.100.25'},
+  {transport: 'tls'},
+  {transport: 'tls', externalIp: '198.51.100.25', appContact: '<sips:application@example.test>'},
+  {transport: 'tls', externalIp: '198.51.100.25', appContact: '<sips:application@localhost>'}
+]) {
+  it(`${fixture.transport}: registered peer INVITE advertises ${fixture.appContact || fixture.externalIp || 'local listener'}`, {timeout: 10000}, async t => {
+    const {srf, sipPort, scheme} = await startServer(t, fixture.transport, fixture);
+    const peer = await createPeer(t, fixture.transport, sipPort);
+    const remoteContact = `sip:watcher@10.0.0.25:${peer.port};transport=${fixture.transport}`;
+    peer.setInviteContact(remoteContact);
+    assert.equal(await peer.request('REGISTER', remoteContact, scheme), 200);
+
+    const dialog = await srf.createUAC(remoteContact, {localSdp: callSdp, headers: fixture.appContact ? {Contact: fixture.appContact} : {}});
+    const invite = peer.received.find(request => request.method === 'INVITE');
+    assert.ok(invite, 'INVITE uses the registered socket rather than the unreachable private Contact');
+    const expectedContact = fixture.appContact
+      ? fixture.appContact.replace('localhost', `${fixture.externalIp}:${sipPort}`)
+      : `<${scheme}:${fixture.externalIp || '127.0.0.1'}:${sipPort};transport=${fixture.transport}>`;
+    assert.equal(invite.headers.contact, expectedContact);
+
+    const destroyed = once(dialog, 'destroy');
+    peer.hangup(invite);
+    await destroyed;
+  });
 }
 
 for (const transport of ['tcp', 'tls']) {

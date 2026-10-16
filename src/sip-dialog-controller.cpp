@@ -572,12 +572,12 @@ namespace drachtio {
                     getTransportDescription( tp, desc ) ;
                     DR_LOG(log_debug) << "SipDialogController::doSendRequestOutsideDialog - selected transport " << std::hex << (void*)tp << ": " << desc << " for request-uri " << requestUri  ;            
 
-                    const tp_name_t* tpn = tport_name( tport_parent( tp ) );
-                    string host = tpn->tpn_host ;
-                    string port = tpn->tpn_port ;
-                    string proto = tpn->tpn_proto ;
-
-                    contact = "<sip:" + host + ":" + port + ";transport=" + proto + ">";
+                    // Keep the registered peer's socket, but advertise its listener's configured identity.
+                    pSelectedTransport = SipTransport::findTransport( tport_parent( tp ) ) ;
+                    pSelectedTransport->getContactUri( contact, true ) ;
+                    contact = "<" + contact + ">" ;
+                    host = pSelectedTransport->getHost() ;
+                    port = pSelectedTransport->getPort() ;
                }
             }
             if( NULL == tp ) {
