@@ -209,7 +209,7 @@ for (const fixture of [
   {transport: 'tls', externalIp: '198.51.100.25'},
   {transport: 'tls'},
   {transport: 'tls', externalIp: '198.51.100.25', appContact: '<sips:application@example.test>'},
-  {transport: 'tls', externalIp: '198.51.100.25', appContact: '<sips:application@localhost>'}
+  {transport: 'tls', externalIp: '198.51.100.25', appContact: '<sips:application@localhost;transport=tls>'}
 ]) {
   it(`${fixture.transport}: registered peer INVITE advertises ${fixture.appContact || fixture.externalIp || 'local listener'}`, {timeout: 10000}, async t => {
     const {srf, sipPort, scheme} = await startServer(t, fixture.transport, fixture);
