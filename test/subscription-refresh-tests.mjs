@@ -214,7 +214,8 @@ for (const fixture of [
     const peer = await createPeer(t, fixture.transport, sipPort);
     const remoteContact = `sip:watcher@10.0.0.25:${peer.port};transport=${fixture.transport}`;
     peer.setInviteContact(remoteContact);
-    assert.equal(await peer.request('REGISTER', remoteContact, scheme), 200);
+    const registerStatus = await peer.request('REGISTER', remoteContact, scheme);
+    assert.equal(registerStatus, 200);
 
     const dialog = await srf.createUAC(remoteContact, {localSdp: callSdp, headers: fixture.appContact ? {Contact: fixture.appContact} : {}});
     const invite = peer.received.find(request => request.method === 'INVITE');
