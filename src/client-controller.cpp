@@ -228,10 +228,10 @@ namespace drachtio {
 
 
     bool ClientController::no_longer_wants_requests( client_ptr client, const string& verb ) {
-        RequestSpecifier spec( client ) ;
         std::lock_guard<std::mutex> l( m_lock ) ;
         // Remove all instances of this client for this verb
-        for (map_of_request_types::iterator it = m_request_types.begin(); it != m_request_types.end(); ) {
+        auto range = m_request_types.equal_range(verb);
+        for (auto it = range.first; it != range.second; ) {
             if (it->second.client() == client) {
                 it = m_request_types.erase(it);
             }
