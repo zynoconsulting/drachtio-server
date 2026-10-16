@@ -574,6 +574,7 @@ namespace drachtio {
 
                     // Keep the registered peer's socket, but advertise its listener's configured identity.
                     pSelectedTransport = SipTransport::findTransport( tport_parent( tp ) ) ;
+                    pSelectedTransport->getDescription( desc ) ;
                     pSelectedTransport->getContactUri( contact, true ) ;
                     contact = "<" + contact + ">" ;
                     host = pSelectedTransport->getHost() ;

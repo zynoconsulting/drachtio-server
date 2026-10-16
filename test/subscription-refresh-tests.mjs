@@ -117,6 +117,8 @@ async function createPeer(t, transport, sipPort) {
   t.after(() => transport === 'udp' ? socket.close() : socket.destroy());
   const received = [];
   const responses = new Map();
+  let resolveAck;
+  const acknowledged = new Promise(resolve => { resolveAck = resolve; });
   let subscriptionContact;
   let inviteContact;
   const subscriptionTag = randomUUID();
@@ -135,7 +137,7 @@ async function createPeer(t, transport, sipPort) {
     }
     const method = lines[0].split(' ')[0];
     received.push({method, uri: lines[0].split(' ')[1], headers});
-    if (method === 'ACK') return;
+    if (method === 'ACK') { resolveAck(); return; }
     const acceptsSubscription = raw.startsWith('SUBSCRIBE ') && subscriptionContact;
     const acceptsInvite = method === 'INVITE' && inviteContact;
     send(['SIP/2.0 200 OK', ...['via', 'from', 'to', 'call-id', 'cseq'].map(name =>
@@ -169,7 +171,7 @@ async function createPeer(t, transport, sipPort) {
   }
   const port = transport === 'udp' ? socket.address().port : socket.localPort;
   return {
-    port, received, close: () => transport === 'udp' ? socket.close() : socket.destroy(),
+    port, received, acknowledged, close: () => transport === 'udp' ? socket.close() : socket.destroy(),
     setSubscriptionContact: contact => { subscriptionContact = contact; },
     setInviteContact: contact => { inviteContact = contact; },
     hangup(invite) {
@@ -225,6 +227,7 @@ for (const fixture of [
       : `<${scheme}:${fixture.externalIp || '127.0.0.1'}:${sipPort};transport=${fixture.transport}>`;
     assert.equal(invite.headers.contact, expectedContact);
 
+    await peer.acknowledged;
     const destroyed = once(dialog, 'destroy');
     peer.hangup(invite);
     await destroyed;
