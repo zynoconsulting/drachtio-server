@@ -391,8 +391,16 @@ namespace drachtio {
         
         client_ptr client = this->findClientForAppTransaction( transactionId );
         if( !client ) {
-            DR_LOG(log_warning) << "ClientController::route_response_inside_transaction - client managing transaction has disconnected: " << transactionId  ;
             removeAppTransaction( transactionId ) ;
+            // A final response removes the app transaction, not the established
+            // dialog. A duplicate final (including one received over TCP/TLS
+            // before the ACK) must not orphan a still-connected dialog owner.
+            if( !dialogId.empty() && this->findClientForDialog( dialogId ) ) {
+                DR_LOG(log_debug) << "ClientController::route_response_inside_transaction - ignoring late response for completed transaction: " <<
+                    transactionId << ", retaining active dialog: " << dialogId ;
+                return false ;
+            }
+            DR_LOG(log_warning) << "ClientController::route_response_inside_transaction - client managing transaction has disconnected: " << transactionId  ;
             removeDialog( dialogId ) ;
             DR_LOG(log_debug) << "ClientController::route_response_inside_transaction - removed dialog: " << dialogId << ", " <<  m_mapDialogs.size() << " dialogs remain" ;
             return false ;
